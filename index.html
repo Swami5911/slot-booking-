@@ -67,11 +67,32 @@
         import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, setDoc, onSnapshot, collection, query, runTransaction, getDoc, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // --- GLOBAL VARIABLES (Provided by Canvas) ---
+        // --- GLOBAL VARIABLES (Provided by Canvas, or blank for external hosting) ---
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
         const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
         
+        /*
+        * 🔑 IMPORTANT: FIREBASE CONFIGURATION FOR EXTERNAL HOSTING (Vercel, Netlify, etc.)
+        * When hosting this file outside of the Canvas environment, the __firebase_config 
+        * variable is UNDEFINED.
+        * * If you are deploying this to Vercel, you MUST REPLACE the placeholder values 
+        * in MANUAL_FIREBASE_CONFIG with the actual Firebase Config from your OWN Firebase project settings.
+        * This is required for the application to connect to the database.
+        */
+        const MANUAL_FIREBASE_CONFIG = {
+            apiKey: "",           // <-- REPLACE ME
+            authDomain: "",       // <-- REPLACE ME
+            projectId: "",        // <-- REPLACE ME
+            storageBucket: "",    // <-- REPLACE ME
+            messagingSenderId: "",// <-- REPLACE ME
+            appId: ""             // <-- REPLACE ME
+        };
+
+        // Prioritize Canvas config if available, otherwise use the user's manual config
+        const firebaseConfig = typeof __firebase_config !== 'undefined' 
+            ? JSON.parse(__firebase_config) 
+            : MANUAL_FIREBASE_CONFIG;
+
         // --- DATA SETUP ---
         const STUDENT_NAMES = [
             "Aditya Raj Pourush", "Aayush Arora", "Harshavardhan S R", "Addarsh Kumar",
@@ -91,16 +112,17 @@
         let isAuthReady = false;
 
         try {
-            // Check if the configuration object is valid before proceeding
-            if (Object.keys(firebaseConfig).length === 0 || !firebaseConfig.apiKey) {
-                throw new Error("Missing Firebase configuration details (config is empty or invalid).");
+            // Check if we have a non-empty API key before trying to initialize
+            if (!firebaseConfig || !firebaseConfig.apiKey) {
+                // This means the user is trying to deploy externally but hasn't updated the config.
+                throw new Error("Missing Firebase API Key. If hosting externally, please update MANUAL_FIREBASE_CONFIG.");
             }
             app = initializeApp(firebaseConfig);
             db = getFirestore(app);
             auth = getAuth(app);
         } catch(error) {
             console.error("Firebase Initialization Error:", error);
-            document.getElementById('loadingIndicator').innerHTML = `<p class="text-red-600 font-bold">Error: Firebase setup failed. Check console for details.</p>`;
+            document.getElementById('loadingIndicator').innerHTML = `<p class="text-red-600 font-bold">Error: Firebase setup failed. Check console for details. (Did you update the Firebase Config for Vercel?)</p>`;
         }
 
         // --- DOM Elements ---
@@ -467,9 +489,11 @@
             } else {
                 // Attempt to sign in
                 try {
-                    if (initialAuthToken) {
+                    // We only use the initialAuthToken if running in the Canvas environment
+                    if (typeof __firebase_config !== 'undefined' && initialAuthToken) { 
                         await signInWithCustomToken(auth, initialAuthToken);
                     } else {
+                        // For external hosting, we must sign in anonymously as we don't have the custom token
                         await signInAnonymously(auth);
                     }
                 } catch (error) {
