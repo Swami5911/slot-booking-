@@ -91,6 +91,10 @@
         let isAuthReady = false;
 
         try {
+            // Check if the configuration object is valid before proceeding
+            if (Object.keys(firebaseConfig).length === 0 || !firebaseConfig.apiKey) {
+                throw new Error("Missing Firebase configuration details (config is empty or invalid).");
+            }
             app = initializeApp(firebaseConfig);
             db = getFirestore(app);
             auth = getAuth(app);
