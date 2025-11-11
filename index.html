@@ -1,0 +1,563 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Viva Slot Scheduler</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Load Inter font -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f7f9fb;
+        }
+        /* Custom scrollbar for better look */
+        .slot-container::-webkit-scrollbar {
+            width: 8px;
+        }
+        .slot-container::-webkit-scrollbar-thumb {
+            background: #cbd5e1;
+            border-radius: 10px;
+        }
+        .slot-container::-webkit-scrollbar-track {
+            background: #f1f5f9;
+        }
+    </style>
+</head>
+<body class="p-4 sm:p-8">
+
+    <!-- Main Container -->
+    <div class="max-w-4xl mx-auto bg-white shadow-2xl rounded-xl p-6 sm:p-10 border-t-8 border-indigo-600">
+
+        <header class="mb-8">
+            <h1 class="text-3xl sm:text-4xl font-extrabold text-gray-900 mb-2">Viva Slot Booking</h1>
+            <p class="text-gray-500">Select your name and book an available time slot below.</p>
+        </header>
+
+        <!-- Student Selector & Status -->
+        <div class="mb-8 p-4 bg-indigo-50 rounded-lg border border-indigo-200 shadow-inner">
+            <label for="studentSelector" class="block text-lg font-medium text-indigo-700 mb-2">1. Select Your Name</label>
+            <select id="studentSelector" class="w-full p-3 border border-indigo-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 transition duration-150 ease-in-out text-gray-700 bg-white shadow-sm">
+                <option value="" disabled selected>-- Select Student --</option>
+            </select>
+            <p id="statusMessage" class="mt-3 text-sm font-medium text-red-600 h-5"></p>
+        </div>
+        
+        <!-- Slot List Header -->
+        <h2 class="text-2xl font-bold text-gray-800 mb-4">2. Available Slots</h2>
+
+        <!-- Slot Container -->
+        <div id="slotContainer" class="slot-container grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 h-[50vh] overflow-y-auto p-2 bg-gray-50 rounded-lg border border-gray-200">
+            <!-- Slots will be rendered here -->
+            <div id="loadingIndicator" class="col-span-full flex justify-center items-center py-10">
+                <svg class="animate-spin -ml-1 mr-3 h-6 w-6 text-indigo-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                <span class="text-indigo-500 font-medium">Loading slots and user data...</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Firebase Imports and Setup -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, onSnapshot, collection, query, runTransaction, getDoc, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // --- GLOBAL VARIABLES (Provided by Canvas) ---
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+        
+        // --- DATA SETUP ---
+        const STUDENT_NAMES = [
+            "Aditya Raj Pourush", "Aayush Arora", "Harshavardhan S R", "Addarsh Kumar",
+            "Bochkar Vishnu Preetham", "Bhumsani Jahnavesh Reddy", "Himanshu Gupta",
+            "Sharugeshwaran K", "Rajashree Guha", "Rikhil Taneja", "Gurpreet Singh",
+            "Arjun Kotha", "Mukund Madhav", "Shivangi Jain", "Dwij Jindal", 
+            "Yagna Kusumanchi", "Milan Sana", "Abdul Nasir Abdul Salam Qureshi", 
+            "Abhinav Rajesh", "Rajab Shoukath Kunnath", "S P Jyoti Ranjan Sahoo", "Sarvesh P"
+        ];
+        
+        const VIVA_SLOTS = generateVivaSlots();
+        const COLLECTION_PATH = `/artifacts/${appId}/public/data/viva_slots`;
+
+        // --- FIREBASE INITIALIZATION ---
+        setLogLevel('Debug');
+        let app, db, auth, userId = null;
+        let isAuthReady = false;
+
+        try {
+            app = initializeApp(firebaseConfig);
+            db = getFirestore(app);
+            auth = getAuth(app);
+        } catch(error) {
+            console.error("Firebase Initialization Error:", error);
+            document.getElementById('loadingIndicator').innerHTML = `<p class="text-red-600 font-bold">Error: Firebase setup failed. Check console for details.</p>`;
+        }
+
+        // --- DOM Elements ---
+        const slotContainer = document.getElementById('slotContainer');
+        const studentSelector = document.getElementById('studentSelector');
+        const statusMessage = document.getElementById('statusMessage');
+
+        // --- Utility Functions ---
+
+        /**
+         * Generates a fixed set of 24 viva slots over two days, running from 1:00 PM to 6:00 PM.
+         * Each slot is 20 minutes with a 5-minute gap (25-minute cycle).
+         * @returns {Array<{id: string, dateTime: Date}>}
+         */
+        function generateVivaSlots() {
+            const slots = [];
+            const today = new Date();
+            
+            // Define two consecutive days starting tomorrow
+            const days = [
+                new Date(today.getTime() + 1 * 24 * 60 * 60 * 1000), // Day 1
+                new Date(today.getTime() + 2 * 24 * 60 * 60 * 1000)  // Day 2
+            ];
+
+            const slotCycleMinutes = 25; // 20 minutes viva + 5 minutes gap
+            const slotsPerDay = 12; // 12 slots * 25 mins = 300 mins (5 hours)
+
+            days.forEach((day, dayIndex) => {
+                let currentSlotTime = new Date(day.getTime());
+                // Start time: 1:00 PM (13:00)
+                currentSlotTime.setHours(13, 0, 0, 0); 
+
+                for (let i = 0; i < slotsPerDay; i++) {
+                    const slotDateTime = new Date(currentSlotTime.getTime());
+                    
+                    slots.push({
+                        id: `slot_${dayIndex + 1}_${i + 1}`,
+                        dateTime: slotDateTime.toISOString(), // Store as ISO string
+                    });
+                    
+                    // Move to the next slot (add 25 minutes for the cycle)
+                    currentSlotTime = new Date(currentSlotTime.getTime() + slotCycleMinutes * 60 * 1000);
+                }
+            });
+
+            return slots;
+        }
+
+        /**
+         * Formats an ISO string to a human-readable date and time.
+         * @param {string} isoString 
+         */
+        function formatSlot(isoString) {
+            const date = new Date(isoString);
+            // Format to show start time and estimated end time (20 minutes later)
+            const dateOptions = { weekday: 'short', month: 'short', day: 'numeric' };
+            const timeOptions = { hour: '2-digit', minute: '2-digit', hour12: true };
+            
+            const dateStr = date.toLocaleDateString('en-US', dateOptions);
+            const startTimeStr = date.toLocaleTimeString('en-US', timeOptions);
+            
+            // Calculate end time (20 minutes after start time)
+            const endTime = new Date(date.getTime() + 20 * 60 * 1000); 
+            const endTimeStr = endTime.toLocaleTimeString('en-US', timeOptions);
+
+            return { date: dateStr, time: `${startTimeStr} - ${endTimeStr}` };
+        }
+        
+        /**
+         * Disables names in the selector that already have a confirmed booking.
+         * @param {Array<string>} bookedNames - List of names that have a confirmed booking.
+         * @param {string} selectedStudent - The name currently selected by the user.
+         */
+        function updateStudentSelectorOptions(bookedNames, selectedStudent) {
+            const bookedNamesSet = new Set(bookedNames);
+
+            // Iterate through all option elements (starting after the placeholder at index 0)
+            for (let i = 1; i < studentSelector.options.length; i++) {
+                const option = studentSelector.options[i];
+                const optionName = option.value;
+                
+                const isBookedGlobally = bookedNamesSet.has(optionName);
+                
+                if (isBookedGlobally) {
+                    // Rule: If a name is booked, disable it for all EXCEPT the currently selected student.
+                    if (optionName !== selectedStudent) {
+                        option.disabled = true;
+                        option.textContent = `${optionName} (Booked)`;
+                        option.classList.add('bg-gray-100', 'text-gray-500');
+                    } else {
+                        // The student's own booked name remains enabled/selectable (though the parent selector is usually disabled)
+                        option.disabled = false;
+                        option.textContent = optionName;
+                        option.classList.remove('bg-gray-100', 'text-gray-500');
+                    }
+                } else {
+                    // Not booked, ensure it's enabled and looks normal
+                    option.disabled = false;
+                    option.textContent = optionName;
+                    option.classList.remove('bg-gray-100', 'text-gray-700');
+                }
+            }
+        }
+
+
+        /**
+         * Renders the list of slots based on real-time data.
+         * @param {Array<Object>} currentSlots - The list of all slots with their booking status.
+         * @param {string} studentBookingId - The ID of the slot currently booked by the selected student (if any).
+         * @param {string} studentBookingUserId - The user ID associated with the current student's booking (if any).
+         */
+        function renderSlots(currentSlots, studentBookingId, studentBookingUserId) {
+            slotContainer.innerHTML = ''; // Clear previous slots
+            if (currentSlots.length === 0) {
+                slotContainer.innerHTML = `<p class="col-span-full text-center text-gray-500 py-10">No viva slots defined.</p>`;
+                return;
+            }
+
+            const selectedStudent = studentSelector.value;
+            
+            // Determine if the selector should be globally locked for this user session
+            // The selector is locked IF the current user ID is tied to a booking (studentBookingUserId === userId)
+            const isSessionLocked = studentBookingUserId && studentBookingUserId === userId;
+
+            // === LOGIC: Lock/Unlock Student Selector (Global Lock for current user) ===
+            if (isSessionLocked) {
+                // If the current session has a booking, lock the ENTIRE selector
+                studentSelector.disabled = true;
+                studentSelector.classList.add('bg-gray-200');
+            } else {
+                // If the current session has no booking, keep it open
+                studentSelector.disabled = false;
+                studentSelector.classList.remove('bg-gray-200');
+            }
+            // ===============================================
+
+            currentSlots.forEach(slot => {
+                const { date, time } = formatSlot(slot.dateTime);
+                const isBooked = slot.isBooked || false;
+                const bookedBy = slot.bookedBy || '';
+                
+                // Determine card styling
+                let cardClass, statusText, buttonHtml, isDisabled, buttonClass;
+
+                if (isBooked) {
+                    cardClass = 'bg-red-50 border-red-300 shadow-md';
+                    statusText = `Booked by: <span class="font-semibold text-red-800">${bookedBy}</span>`;
+                    isDisabled = true;
+                    if (bookedBy === selectedStudent) {
+                        // This slot is booked by the current user
+                        cardClass = 'bg-green-50 border-green-400 shadow-xl ring-2 ring-green-500';
+                        statusText = `Your Booking: <span class="font-semibold text-green-800">${bookedBy}</span>`;
+                        buttonClass = 'bg-green-600 hover:bg-green-700';
+                        buttonHtml = `<button data-slot-id="${slot.id}" data-action="unbook" class="w-full text-white font-bold py-2 px-4 rounded-lg transition duration-150 ${buttonClass}">Cancel Booking</button>`;
+                        isDisabled = false; // Allow canceling
+                    } else {
+                         // Booked by someone else
+                        buttonClass = 'bg-gray-400 cursor-not-allowed';
+                        buttonHtml = `<button disabled class="w-full text-white font-bold py-2 px-4 rounded-lg ${buttonClass}">Booked</button>`;
+                    }
+                } else {
+                    // Available slot
+                    cardClass = 'bg-white border-gray-300 hover:shadow-lg transition duration-300';
+                    statusText = `<span class="text-green-600 font-semibold">AVAILABLE</span>`;
+                    // Disabled if no student selected OR if the session is locked (already has a booking)
+                    isDisabled = (selectedStudent === '' || isSessionLocked); 
+                    
+                    buttonClass = isDisabled ? 'bg-indigo-300 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 shadow-indigo-400/50 shadow-lg';
+                    buttonHtml = `<button data-slot-id="${slot.id}" data-action="book" ${isDisabled ? 'disabled' : ''} class="w-full text-white font-bold py-2 px-4 rounded-lg transition duration-150 ${buttonClass}">Book This Slot</button>`;
+                }
+
+                // If the session is locked and the slot is not the one they booked, display the "Already Booked" message on the button
+                if (isSessionLocked && !isBooked) {
+                    isDisabled = true;
+                    buttonClass = 'bg-gray-300 cursor-not-allowed';
+                    buttonHtml = `<button disabled class="w-full text-white font-bold py-2 px-4 rounded-lg ${buttonClass}">Already Booked (Cancel your existing slot first)</button>`;
+                }
+
+                const slotCard = `
+                    <div class="p-5 border-2 rounded-xl flex flex-col justify-between space-y-4 ${cardClass}">
+                        <div>
+                            <p class="text-sm text-gray-500">${date}</p>
+                            <h3 class="text-xl font-extrabold text-gray-900">${time}</h3>
+                            <p class="text-xs text-gray-400">Viva: 20 min | Gap: 5 min</p>
+                        </div>
+                        <p class="text-sm">${statusText}</p>
+                        ${buttonHtml}
+                    </div>
+                `;
+                slotContainer.insertAdjacentHTML('beforeend', slotCard);
+            });
+
+            // Re-attach event listeners after rendering
+            document.querySelectorAll('button[data-action]').forEach(button => {
+                button.addEventListener('click', handleBookingAction);
+            });
+        }
+
+        /**
+         * Sets up the initial, fixed slots in Firestore if they don't exist.
+         */
+        async function setupInitialSlots() {
+            try {
+                // Check if any slot document exists to avoid unnecessary writes
+                const firstSlotRef = doc(db, COLLECTION_PATH, VIVA_SLOTS[0].id);
+                const firstSlotSnap = await getDoc(firstSlotRef);
+
+                if (!firstSlotSnap.exists()) {
+                    console.log("No slots found. Initializing all 24 slots.");
+                    const batch = [];
+                    VIVA_SLOTS.forEach(slot => {
+                        const slotRef = doc(db, COLLECTION_PATH, slot.id);
+                        batch.push(setDoc(slotRef, { 
+                            id: slot.id, 
+                            dateTime: slot.dateTime, 
+                            isBooked: false, 
+                            bookedBy: "",
+                            bookedByUserId: "" // Initialize new field
+                        }));
+                    });
+                    await Promise.all(batch);
+                    console.log("All initial slots created successfully.");
+                } else {
+                    console.log("Slots already initialized.");
+                }
+            } catch (error) {
+                console.error("Error setting up initial slots:", error);
+            }
+        }
+
+        /**
+         * Handles the click event for booking or unbooking a slot.
+         */
+        async function handleBookingAction(event) {
+            const button = event.target;
+            const slotId = button.dataset.slotId;
+            const action = button.dataset.action;
+            const selectedStudent = studentSelector.value;
+            
+            if (!isAuthReady || !userId) {
+                displayStatus("Authentication not ready. Please wait.", 'red');
+                return;
+            }
+            if (!selectedStudent) {
+                displayStatus("Please select your name first!", 'red');
+                return;
+            }
+            
+            button.disabled = true;
+            button.textContent = action === 'book' ? 'Booking...' : 'Canceling...';
+
+            const slotRef = doc(db, COLLECTION_PATH, slotId);
+
+            try {
+                // Use a transaction for atomic read/write operations
+                await runTransaction(db, async (transaction) => {
+                    const slotDoc = await transaction.get(slotRef);
+                    if (!slotDoc.exists()) {
+                        throw new Error("Slot does not exist.");
+                    }
+
+                    const slotData = slotDoc.data();
+                    const allSlotsData = window.currentAllSlots; // Access the current local state
+
+                    if (action === 'book') {
+                        // 1. Check if the slot is already booked
+                        if (slotData.isBooked) {
+                            throw new Error(`This slot was just booked by ${slotData.bookedBy}!`);
+                        }
+                        
+                        // 2. Check if the student already has a booking by NAME
+                        const studentAlreadyBooked = allSlotsData.some(s => s.isBooked && s.bookedBy === selectedStudent);
+                        if (studentAlreadyBooked) {
+                             throw new Error(`You have already booked a slot under the name ${selectedStudent}. Please cancel your existing booking first.`);
+                        }
+                        
+                        // 3. Check if the user ID (session) already has a booking for a DIFFERENT name
+                        const sessionAlreadyBooked = allSlotsData.find(s => s.isBooked && s.bookedByUserId === userId);
+                        if (sessionAlreadyBooked) {
+                             throw new Error(`Your session is already tied to a booking for ${sessionAlreadyBooked.bookedBy}. You must cancel it first.`);
+                        }
+
+
+                        // Perform the booking
+                        transaction.update(slotRef, {
+                            isBooked: true,
+                            bookedBy: selectedStudent,
+                            bookedByUserId: userId // <-- Saving the permanent session ID
+                        });
+                        displayStatus(`Successfully booked slot ${formatSlot(slotData.dateTime).time}!`, 'green');
+
+                    } else if (action === 'unbook') {
+                        // 1. Check if the student is the one who booked it
+                        if (slotData.bookedBy !== selectedStudent) {
+                            throw new Error("You can only cancel your own booking.");
+                        }
+                        // 2. Check if the current session ID matches the booking ID
+                        if (slotData.bookedByUserId !== userId) {
+                            throw new Error("Session mismatch. You must cancel the booking from the original browser/device.");
+                        }
+
+                        // Perform the cancellation
+                        transaction.update(slotRef, {
+                            isBooked: false,
+                            bookedBy: "",
+                            bookedByUserId: "" // <-- Clearing the permanent session ID
+                        });
+                        displayStatus("Successfully cancelled your booking.", 'orange');
+                    }
+                });
+
+            } catch (error) {
+                console.error("Booking transaction failed:", error);
+                const errorMessage = error.message.includes('just booked') || error.message.includes('already booked') || error.message.includes('cancel your own') || error.message.includes('Session mismatch')
+                    ? error.message
+                    : "An unexpected error occurred. Try again.";
+                displayStatus(errorMessage, 'red');
+
+            } finally {
+                // UI update will be handled by the onSnapshot listener, but re-enable the button locally
+                button.textContent = action === 'book' ? 'Book This Slot' : 'Cancel Booking';
+                button.disabled = false;
+            }
+        }
+
+        /**
+         * Displays a temporary status message to the user.
+         */
+        function displayStatus(message, type) {
+            statusMessage.textContent = message;
+            statusMessage.className = `mt-3 text-sm font-medium h-5 ${type === 'red' ? 'text-red-600' : type === 'green' ? 'text-green-600' : 'text-orange-600'}`;
+            
+            // Clear message after 5 seconds
+            clearTimeout(window.statusTimer);
+            window.statusTimer = setTimeout(() => {
+                statusMessage.textContent = '';
+                statusMessage.className = `mt-3 text-sm font-medium text-red-600 h-5`;
+            }, 5000);
+        }
+
+        // --- MAIN EXECUTION FLOW ---
+
+        // 1. Authentication
+        onAuthStateChanged(auth, async (user) => {
+            if (user) {
+                userId = user.uid;
+                isAuthReady = true;
+                console.log("Authentication successful, user ID:", userId);
+
+                // Populate student selector once auth is ready
+                STUDENT_NAMES.forEach(name => {
+                    const option = document.createElement('option');
+                    option.value = name;
+                    option.textContent = name;
+                    studentSelector.appendChild(option);
+                });
+
+                // 2. Setup Slots and Start Listener (Only after auth)
+                if (db && auth) {
+                    await setupInitialSlots();
+                    startRealtimeListener();
+                }
+
+            } else {
+                // Attempt to sign in
+                try {
+                    if (initialAuthToken) {
+                        await signInWithCustomToken(auth, initialAuthToken);
+                    } else {
+                        await signInAnonymously(auth);
+                    }
+                } catch (error) {
+                    console.error("Authentication failed:", error);
+                    document.getElementById('loadingIndicator').innerHTML = `<p class="text-red-600 font-bold">Error: Authentication failed.</p>`;
+                }
+            }
+        });
+
+        // 2. Real-time Listener for Slots
+        function startRealtimeListener() {
+            if (!db || !isAuthReady) return;
+
+            const q = query(collection(db, COLLECTION_PATH));
+
+            onSnapshot(q, (snapshot) => {
+                const updatedSlots = [];
+                let studentBookingId = null;
+                let studentBookingUserId = null; // The User ID tied to the selected student's booking
+                let currentSessionBookedName = null; // The Name tied to the CURRENT session's Firebase userId
+                const bookedNames = []; 
+
+                snapshot.forEach((doc) => {
+                    const slot = doc.data();
+                    updatedSlots.push(slot);
+                    
+                    if (slot.isBooked) {
+                        bookedNames.push(slot.bookedBy); 
+                    }
+                    
+                    // Identify the booking tied to the CURRENT SESSION (based on Firebase userId)
+                    if (slot.isBooked && slot.bookedByUserId === userId) {
+                        currentSessionBookedName = slot.bookedBy;
+                        studentBookingId = slot.id; // Also identify the ID for rendering buttons
+                        studentBookingUserId = slot.bookedByUserId; // Set the user ID for this booking
+                    }
+                });
+
+                // --- AUTO-SELECT LOGIC ON REFRESH ---
+                // If the current session ID has a booking, force the student selector to that name
+                if (currentSessionBookedName && studentSelector.value !== currentSessionBookedName) {
+                    studentSelector.value = currentSessionBookedName;
+                    displayStatus(`Your session is locked to ${currentSessionBookedName}. Cancel your booking to proceed.`, 'green');
+                }
+                
+                // If the session had a booking but it was cancelled, ensure the selector is reset
+                if (!currentSessionBookedName && studentSelector.disabled) {
+                    studentSelector.value = ""; // Reset to placeholder
+                    // The renderSlots function will handle unlocking the disabled state
+                }
+                // --- END AUTO-SELECT LOGIC ---
+                
+                // Sort by dateTime for consistent display
+                updatedSlots.sort((a, b) => new Date(a.dateTime) - new Date(b.dateTime));
+
+                // Store current slots globally to be accessible during transactions
+                window.currentAllSlots = updatedSlots; 
+                
+                // 3. Render UI (updates booking buttons and selector lock status)
+                // Pass the new studentBookingUserId to ensure the lock is based on the permanent session ID
+                renderSlots(updatedSlots, studentBookingId, studentBookingUserId);
+                
+                // 4. Update Selector Options (disables booked names for everyone else)
+                updateStudentSelectorOptions(bookedNames, studentSelector.value);
+                
+            }, (error) => {
+                console.error("Firestore real-time listener error:", error);
+                slotContainer.innerHTML = `<p class="col-span-full text-center text-red-600 py-10">Failed to load real-time data. Check connection/rules.</p>`;
+            });
+        }
+        
+        // 5. Update UI when student selection changes
+        studentSelector.addEventListener('change', () => {
+            // Re-render the slots to reflect the new student's booking status
+            const selectedStudent = studentSelector.value;
+            const allSlots = window.currentAllSlots || []; 
+
+            // Find if the currently selected student has a booking associated with *any* user ID
+            const bookedSlot = allSlots.find(s => s.isBooked && s.bookedBy === selectedStudent);
+            const studentBookingId = bookedSlot ? bookedSlot.id : null;
+            const studentBookingUserId = bookedSlot ? bookedSlot.bookedByUserId : null;
+            
+            if (studentBookingId) {
+                displayStatus(`Welcome, ${selectedStudent}! You currently have a booking.`, 'green');
+            } else if (selectedStudent) {
+                displayStatus(`Welcome, ${selectedStudent}! Select an available slot to book.`, 'orange');
+            }
+
+            // The renderSlots function now handles locking/unlocking the selector based on studentBookingId
+            renderSlots(allSlots, studentBookingId, studentBookingUserId);
+        });
+
+    </script>
+</body>
+</html>
