@@ -64,7 +64,7 @@
     <!-- Firebase Imports and Setup -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, setDoc, onSnapshot, collection, query, runTransaction, getDoc, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // --- GLOBAL VARIABLES (Provided by Canvas, or blank for external hosting) ---
@@ -73,25 +73,47 @@
         
         /*
         * 🔑 IMPORTANT: FIREBASE CONFIGURATION FOR EXTERNAL HOSTING (Vercel, Netlify, etc.)
-        * When hosting this file outside of the Canvas environment, the __firebase_config 
-        * variable is UNDEFINED.
-        * * If you are deploying this to Vercel, you MUST REPLACE the placeholder values 
-        * in MANUAL_FIREBASE_CONFIG with the actual Firebase Config from your OWN Firebase project settings.
-        * This is required for the application to connect to the database.
+        * You MUST REPLACE the placeholder values in MANUAL_FIREBASE_CONFIG below 
+        * with the actual Firebase Config from your OWN Firebase project settings.
         */
         const MANUAL_FIREBASE_CONFIG = {
-            apiKey: "",           // <-- REPLACE ME
-            authDomain: "",       // <-- REPLACE ME
-            projectId: "",        // <-- REPLACE ME
-            storageBucket: "",    // <-- REPLACE ME
-            messagingSenderId: "",// <-- REPLACE ME
-            appId: ""             // <-- REPLACE ME
+            apiKey: "",           // <-- REPLACE ME with your actual API Key
+            authDomain: "",       // <-- REPLACE ME with your Auth Domain
+            projectId: "",        // <-- REPLACE ME with your Project ID
+            storageBucket: "",    // <-- REPLACE ME with your Storage Bucket
+            messagingSenderId: "",// <-- REPLACE ME with your Sender ID
+            appId: ""             // <-- REPLACE ME with your App ID
         };
 
         // Prioritize Canvas config if available, otherwise use the user's manual config
         const firebaseConfig = typeof __firebase_config !== 'undefined' 
             ? JSON.parse(__firebase_config) 
             : MANUAL_FIREBASE_CONFIG;
+        
+        /*
+        * 🔒 SECURITY RULES FIX: Missing or Insufficient Permissions Error 
+        * * The "Missing or insufficient permissions" error means your Firebase project's 
+        * security rules are blocking the application from reading/writing data.
+        * * To fix this, you MUST go to your Firebase Console -> Firestore Database -> Rules Tab 
+        * and update the rules to allow access to the public collection used by this app.
+        * * The required rule (allowing authenticated users, including anonymous sign-in, R/W access):
+        * -----------------------------------------------------------------------------------
+        * rules_version = '2';
+        * service cloud.firestore {
+        * match /databases/{database}/documents {
+        * // Rule for the public path used by this app
+        * match /artifacts/{appId}/public/data/viva_slots/{slotId} {
+        * // Allows read/write access to any user who is authenticated (request.auth != null)
+        * allow read, write: if request.auth != null;
+        * }
+        * * // Recommended default security rule for all other documents
+        * match /{document=**} {
+        * allow read, write: if false; 
+        * }
+        * }
+        * }
+        * -----------------------------------------------------------------------------------
+        */
 
         // --- DATA SETUP ---
         const STUDENT_NAMES = [
@@ -114,15 +136,16 @@
         try {
             // Check if we have a non-empty API key before trying to initialize
             if (!firebaseConfig || !firebaseConfig.apiKey) {
-                // This means the user is trying to deploy externally but hasn't updated the config.
-                throw new Error("Missing Firebase API Key. If hosting externally, please update MANUAL_FIREBASE_CONFIG.");
+                // Throwing specific error for external hosting failure
+                throw new Error("Missing Firebase API Key. If hosting externally, please update MANUAL_FIREBASE_CONFIG with your project credentials.");
             }
             app = initializeApp(firebaseConfig);
             db = getFirestore(app);
             auth = getAuth(app);
         } catch(error) {
             console.error("Firebase Initialization Error:", error);
-            document.getElementById('loadingIndicator').innerHTML = `<p class="text-red-600 font-bold">Error: Firebase setup failed. Check console for details. (Did you update the Firebase Config for Vercel?)</p>`;
+            // Updated error message to include the configuration step
+            document.getElementById('loadingIndicator').innerHTML = `<p class="text-red-600 font-bold">Error: Firebase setup failed. Check console for details. (Did you update Firebase Config AND Security Rules?)</p>`;
         }
 
         // --- DOM Elements ---
@@ -349,7 +372,9 @@
                     console.log("Slots already initialized.");
                 }
             } catch (error) {
+                // If this is a permission error, it will be logged and re-thrown to be handled upstream
                 console.error("Error setting up initial slots:", error);
+                throw error; 
             }
         }
 
@@ -482,20 +507,21 @@
 
                 // 2. Setup Slots and Start Listener (Only after auth)
                 if (db && auth) {
-                    await setupInitialSlots();
-                    startRealtimeListener();
+                    try {
+                        await setupInitialSlots();
+                        startRealtimeListener();
+                    } catch (error) {
+                        // Catching errors from setupInitialSlots (like permissions)
+                        console.error("Setup failed after authentication:", error);
+                        document.getElementById('loadingIndicator').innerHTML = `<p class="text-red-600 font-bold">Error: Cannot access database. Check Security Rules in Firebase Console.</p>`;
+                    }
                 }
 
             } else {
                 // Attempt to sign in
                 try {
-                    // We only use the initialAuthToken if running in the Canvas environment
-                    if (typeof __firebase_config !== 'undefined' && initialAuthToken) { 
-                        await signInWithCustomToken(auth, initialAuthToken);
-                    } else {
-                        // For external hosting, we must sign in anonymously as we don't have the custom token
-                        await signInAnonymously(auth);
-                    }
+                    // For external hosting, we sign in anonymously
+                    await signInAnonymously(auth);
                 } catch (error) {
                     console.error("Authentication failed:", error);
                     document.getElementById('loadingIndicator').innerHTML = `<p class="text-red-600 font-bold">Error: Authentication failed.</p>`;
